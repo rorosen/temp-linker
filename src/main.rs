@@ -1,4 +1,4 @@
-use std::{fs, io, os::unix::fs::symlink};
+use std::{fs, os::unix::fs::symlink, path::Path};
 
 use clap::Parser;
 use walkdir::{DirEntry, WalkDir};
@@ -15,53 +15,61 @@ pub struct Args {
     #[arg(short, long)]
     name: String,
 
-    /// The label of the hwmon temp input to use.
+    /// The label of the hwmon temp*_label file, if present.
     #[arg(short, long)]
-    label: String,
+    label: Option<String>,
 
     /// The link to create for the specified hwmon temp input.
     #[arg(short = 'p', long)]
     link_path: String,
 }
 
-fn is_temp_input(entry: &DirEntry) -> bool {
+fn map_temp_input(entry: DirEntry) -> Option<(String, DirEntry)> {
     if let Some(name) = entry.file_name().to_str() {
-        return name.contains(PATTERN_TEMP) && name.contains(PATTERN_INPUT);
+        if name.contains(PATTERN_TEMP) && name.contains(PATTERN_INPUT) {
+            return Some((name.to_string(), entry));
+        }
     }
-    false
+    None
 }
 
-fn main() -> io::Result<()> {
+fn force_symlink(original: &Path, link: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = fs::remove_file(link);
+    return symlink(original, link).map_err(|e| e.into());
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    for temp_input in WalkDir::new(HWMON_DIR)
+    for temp_input_pair in WalkDir::new(HWMON_DIR)
         .follow_links(true)
         .max_depth(2)
         .into_iter()
         .filter_map(|r| r.ok())
-        .filter(is_temp_input)
+        .filter_map(map_temp_input)
     {
-        let path = temp_input.path();
+        let path = temp_input_pair.1.path();
         if let Some(dir) = path.parent() {
             let name = fs::read_to_string(dir.join(PATTERN_NAME))?;
             if name.trim() != args.name {
                 continue;
             }
 
-            let path_str = path.to_str().unwrap();
-            if let Some(index) = path_str.rfind(PATTERN_INPUT) {
-                let mut label_path = path_str.to_string();
-                label_path.replace_range(index.., PATTERN_LABEL);
-
-                if let Ok(label) = fs::read_to_string(label_path) {
-                    if label.trim() == args.label {
-                        let _ = fs::remove_file(&args.link_path);
-                        symlink(temp_input.path(), &args.link_path)?;
+            match args.label {
+                Some(ref label) => {
+                    let label_path = temp_input_pair.0.replace(PATTERN_INPUT, PATTERN_LABEL);
+                    if let Ok(hwmon_label) = fs::read_to_string(dir.join(label_path)) {
+                        if hwmon_label.trim() == label {
+                            return force_symlink(temp_input_pair.1.path(), &args.link_path);
+                        }
                     }
+                }
+                None => {
+                    return force_symlink(temp_input_pair.1.path(), &args.link_path);
                 }
             }
         }
     }
 
-    Ok(())
+    Err("no matching hwmon temp input found".into())
 }
