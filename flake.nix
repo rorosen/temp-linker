@@ -18,20 +18,24 @@
       flake-utils,
       ...
     }:
-    flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        craneLib = crane.mkLib nixpkgs.legacyPackages.${system};
-        src = craneLib.cleanCargoSource (craneLib.path ./.);
-        commonArgs = {
-          inherit src;
-          inherit (craneLib.crateNameFromCargoToml { cargoToml = ./Cargo.toml; }) pname version;
-        };
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-        temp-linker = craneLib.buildPackage (commonArgs // { inherit cargoArtifacts; });
-      in
-      {
-        packages.default = temp-linker;
-      }
-    );
+    let
+      mkTempLinker =
+        pkgs:
+        let
+          craneLib = crane.mkLib pkgs;
+          src = craneLib.cleanCargoSource (craneLib.path ./.);
+          commonArgs = {
+            inherit src;
+            inherit (craneLib.crateNameFromCargoToml { cargoToml = ./Cargo.toml; }) pname version;
+          };
+          cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        in
+        craneLib.buildPackage (commonArgs // { inherit cargoArtifacts; });
+    in
+    (flake-utils.lib.eachDefaultSystem (system: {
+      packages.default = mkTempLinker nixpkgs.legacyPackages.${system};
+    }))
+    // {
+      overlays.default = _final: prev: { temp-linker = mkTempLinker prev; };
+    };
 }
